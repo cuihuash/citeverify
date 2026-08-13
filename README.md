@@ -75,11 +75,11 @@ The original reference number is preserved even after the results are sorted.
 The tool does not label a reference fake simply because a search finds no
 match.
 
-## Quick start for Windows users
+## Quick start
 
 ### Requirements
 
-- Windows 10 or later
+- Windows, macOS, or Linux
 - Python 3.10 or newer from [python.org](https://www.python.org/downloads/)
 - This repository copied or downloaded to your computer
 
@@ -88,8 +88,8 @@ shown.
 
 ### Install the dependencies
 
-Open PowerShell and run these commands, one at a time. Replace the path with
-the location of your local CiteVerify folder:
+On Windows, open PowerShell and run these commands, one at a time. Replace the
+path with the location of your local CiteVerify folder:
 
 ```powershell
 cd "C:\path\to\CiteVerify"
@@ -104,15 +104,22 @@ py -m pip install -r requirements.txt
 
 You normally need to install the dependencies only once per computer.
 
+On macOS or Linux, open Terminal and run:
+
+```bash
+cd "/path/to/CiteVerify"
+python3 -m pip install -r requirements.txt
+```
+
 ### Run the HTML interface
 
-Without API keys:
+On Windows, without API keys:
 
 ```powershell
 python .\citeverify_web.py
 ```
 
-With API-key files:
+On Windows, with API-key files:
 
 ```powershell
 python .\citeverify_web.py `
@@ -120,7 +127,21 @@ python .\citeverify_web.py `
   --s2-api-key-file "C:\path\to\S2.txt"
 ```
 
-Leave the PowerShell window open while using the app. Open
+On macOS or Linux, without API keys:
+
+```bash
+python3 ./citeverify_web.py
+```
+
+With API-key files:
+
+```bash
+python3 ./citeverify_web.py \
+  --openalex-key-file "/path/to/openalex.txt" \
+  --s2-api-key-file "/path/to/S2.txt"
+```
+
+Leave the terminal window open while using the app. Open
 <http://127.0.0.1:8765/> in your browser, upload one or more files, and click
 **Process references**.
 
@@ -128,7 +149,7 @@ The app shows the selected filenames before processing. A paper with many
 references may take several minutes because each reference may be checked by
 more than one online service.
 
-When finished, return to PowerShell and press **Ctrl+C** to stop the app.
+When finished, return to the terminal and press **Ctrl+C** to stop the app.
 
 ## One-click Windows launcher
 
@@ -143,6 +164,25 @@ The launcher looks for these optional files beside itself:
 
 Each file should contain only one API key on one line. These filenames are
 ignored by Git and must never be committed to GitHub.
+
+## macOS or Linux launcher
+
+Open Terminal, move into the CiteVerify folder, and run:
+
+```bash
+cd "/path/to/CiteVerify"
+bash ./start-citeverify.sh
+```
+
+The script looks for `openalex.txt` and `S2.txt` beside itself, just like the
+Windows launcher. Leave the terminal window open while using the browser page.
+
+On macOS, you can make the script executable for future use:
+
+```bash
+chmod +x ./start-citeverify.sh
+./start-citeverify.sh
+```
 
 If the files are absent, CiteVerify still runs. It simply skips the OpenAlex
 and Semantic Scholar cross-checks.
@@ -196,7 +236,8 @@ ZIP file. Each person should:
 3. Run `python -m pip install -r requirements.txt`.
 4. Obtain their own API keys, if desired.
 5. Create their own `openalex.txt` and `S2.txt` files.
-6. Start CiteVerify with `Start-CiteVerify.bat` or the PowerShell command.
+6. Start CiteVerify with the launcher or terminal command for their operating
+   system.
 
 Do not include your personal papers, generated reports, API keys, or private
 diagnostics when sharing the project.
@@ -223,7 +264,7 @@ commands:
 
 ### Git commands
 
-From PowerShell inside the CiteVerify folder:
+From a terminal inside the CiteVerify folder:
 
 ```powershell
 git init
@@ -329,6 +370,7 @@ reference is false. Try again later or review the DOI and title manually.
 - `citeverify_parser.py`: PDF parsing and citation diagnostics.
 - `citeverify_lookup.py`: DOI and catalog verification.
 - `Start-CiteVerify.bat`: one-click Windows launcher.
+- `start-citeverify.sh`: macOS/Linux launcher.
 - `requirements.txt`: Python dependencies.
 - `VERSION`: current release version.
 - `CHANGELOG.md`: release history.
