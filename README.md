@@ -10,6 +10,8 @@ matching scholarly records, and creates an HTML report for human review.
 
 ![CiteVerify upload interface](Interface.png)
 
+![CiteVerify results interface](Interface2.png)
+
 ## What it does
 
 CiteVerify:
