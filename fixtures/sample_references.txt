@@ -1,0 +1,7 @@
+References
+
+[1] A. Author and B. Researcher, "A Reliable Method for Testing 3D Models," Journal of Examples, vol. 12, no. 2, pp. 123-130, 2024. doi:10.1234/example.5678
+
+[2] J. Bookwriter, The Example of a Long Book Title: A Practical Introduction. Example Press, 2019. ISBN 978-1-234-56789-7.
+
+[3] C. Scholar, "A Citation with Layout Artifacts," Conference Proceedings, 2021, paragraph 4, lines 12-15, pp. 44-46.

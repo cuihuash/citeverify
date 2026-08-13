@@ -1,0 +1,35 @@
+# Python-generated files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments and local tooling
+.venv/
+venv/
+env/
+.env
+.idea/
+.vscode/
+
+# Private API keys and local configuration
+openalex.txt
+S2.txt
+*.key
+*.secret
+api-keys/
+
+# Private papers, diagnostics, and generated reports
+*.pdf
+*.doc
+*.docx
+outputs/
+*diagnostics*.json
+*verification*.json
+*verification*.html
+
+# Local logs and temporary files
+*.log
+*.out
+*.err
+Thumbs.db
+Desktop.ini

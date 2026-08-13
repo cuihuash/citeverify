@@ -1,0 +1,547 @@
+"""CiteVerify citation parsing diagnostics.
+
+This deliberately stops before database lookup. Its job is to make PDF parsing
+uncertainty visible instead of turning a bad parse into a false hallucination.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import sys
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
+from typing import Iterable
+
+try:
+    import fitz  # PyMuPDF
+except ImportError:  # pragma: no cover - exercised by the command-line error path
+    fitz = None
+
+
+REFERENCE_HEADERS = re.compile(
+    r"(?im)^\s*(?:references|bibliography|references and bibliography|literature cited)\s*:?[ \t]*$"
+)
+PDF_REFERENCE_START = "@@REF_START@@"
+NEXT_SECTION = re.compile(
+    r"(?im)^\s*(?:@@REF_START@@)?\s*(?:appendix|appendices|acknowledg(?:e)?ments|supplementary material|supplementary file|author contributions|conflict of interest|references)\b.*$"
+)
+IEEE_START = re.compile(r"(?m)^\s*\[(\d{1,4})\]\s+")
+NUMBERED_START = re.compile(r"(?m)^\s*(\d{1,4})[.)]\s+")
+AUTHOR_YEAR_START = re.compile(
+    # Some references have a long author list that wraps across several PDF
+    # lines. Allow enough room for those lists so a repeated lead author does
+    # not get merged into the preceding reference.
+    r"(?m)^(?=(?:[A-Z][^\n]{0,500}\((?:18|19|20)\d{2}[a-z]?\)\.)"
+    r"|(?:[A-Z][^\n]{0,500}\n\s*\((?:18|19|20)\d{2}[a-z]?\)\.))"
+)
+YEAR = re.compile(r"\b(?:18|19|20)\d{2}\b")
+DOI = re.compile(r"\b10\.\d{4,9}/(?:[^\s<>\"']|(?<=-)\s+)+", re.I)
+ARXIV = re.compile(r"\barXiv\s*:\s*([0-9]{4}\.[0-9]{4,5}(?:v\d+)?)\b", re.I)
+ISBN = re.compile(
+    r"\bISBN(?:-1[03])?\s*[:#]?\s*((?:\d[ -]?){9,16}[\dXx])\b"
+    r"|\b(97[89](?:[ -]?\d){10})\b",
+    re.I,
+)
+QUOTED_TITLE = re.compile(r'["“”„‟](.+?)["“”„‟]', re.S)
+
+# These patterns are intentionally conservative. We remove explicit labels,
+# not every number, because numbers can be part of real titles (1984, 3D, etc.).
+ARTIFACT_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    (
+        "page_or_line_label",
+        re.compile(
+            r"\b(?:p|pp|page|pages|line|lines|para|paragraph|paragraphs)\.?\s*\d+(?:\s*[-–—]\s*\d+)?\b",
+            re.I,
+        ),
+    ),
+    (
+        "page_range",
+        # Require the range not to be embedded in an identifier such as an
+        # ISBN (978-1-234-56789-7). Explicit `pp.`/`p.` ranges are handled by
+        # the label pattern above.
+        re.compile(r"(?<![\w./-])\d{1,4}\s*[-–—]\s*\d{1,4}(?![\w./-])"),
+    ),
+    (
+        "line_marker",
+        re.compile(r"\b(?:l|ll)\.?\s*\d+(?:\s*[-–—]\s*\d+)?\b", re.I),
+    ),
+)
+
+
+@dataclass
+class TitleCandidate:
+    title: str
+    method: str
+    confidence: float
+
+
+@dataclass
+class ReferenceDiagnostic:
+    number: int | None
+    raw_citation: str
+    cleaned_citation: str
+    title_candidates: list[TitleCandidate] = field(default_factory=list)
+    doi: str | None = None
+    isbn: str | None = None
+    arxiv_id: str | None = None
+    citation_type: str = "unknown"
+    artifact_flags: list[str] = field(default_factory=list)
+    parser_confidence: str = "low"
+    parser_notes: list[str] = field(default_factory=list)
+
+
+@dataclass
+class DocumentDiagnostics:
+    source: str
+    references_header: str | None
+    reference_count: int
+    diagnostics: list[ReferenceDiagnostic]
+    warnings: list[str] = field(default_factory=list)
+
+
+def extract_pdf_text(path: Path) -> str:
+    if fitz is None:
+        raise RuntimeError("PyMuPDF is not installed. Install it with: python -m pip install PyMuPDF")
+    with fitz.open(path) as document:
+        pages: list[str] = []
+        for page_number, page in enumerate(document, start=1):
+            # Keep a small amount of layout information from the PDF. In many
+            # reference lists, a wrapped line is indented while a new record
+            # starts at the left body margin. This prevents long repeated
+            # author lists from being merged with the previous reference.
+            lines: list[tuple[float, float, str]] = []
+            page_height = page.rect.height
+            for block in page.get_text("dict").get("blocks", []):
+                if block.get("type") != 0:
+                    continue
+                for line in block.get("lines", []):
+                    text = "".join(span.get("text", "") for span in line.get("spans", [])).strip()
+                    if text:
+                        lines.append((line["bbox"][1], line["bbox"][0], text))
+            lines.sort(key=lambda entry: (entry[0], entry[1]))
+
+            body_left_edges = [
+                x
+                for y, x, text in lines
+                if 45 < y < page_height - 45
+                and x > 20
+                and text.casefold() != "for peer review"
+            ]
+            body_left = min(body_left_edges) if body_left_edges else 72.0
+            page_lines: list[str] = []
+            for y, x, text in lines:
+                if y <= 45 or y >= page_height - 45:
+                    continue
+                if text.casefold() == "for peer review":
+                    continue
+                if re.fullmatch(r"(?:page\s+)?\d+(?:\s+of\s+\d+)?", text, re.I):
+                    continue
+                marker = PDF_REFERENCE_START if x <= body_left + 2 else ""
+                page_lines.append(marker + text)
+            page_text = "\n".join(page_lines)
+            pages.append(f"\n<!-- PAGE {page_number} -->\n{page_text}")
+        return "\n".join(pages)
+
+
+def find_references_section(text: str) -> tuple[str | None, str, list[str]]:
+    matches = list(REFERENCE_HEADERS.finditer(text))
+    if not matches:
+        return None, "", ["No References/Bibliography heading was detected."]
+
+    # Proof PDFs may contain a second References section inside a
+    # supplementary file. The first exact heading belongs to the main article;
+    # selecting the last heading would silently analyze the wrong bibliography.
+    header = matches[0].group(0).strip()
+    start = matches[0].end()
+    remainder = text[start:]
+
+    # References are commonly the final section, but stop before an explicit
+    # appendix or acknowledgements heading when one follows them.
+    stop = None
+    for match in NEXT_SECTION.finditer(remainder):
+        if match.start() > 20:
+            stop = match.start()
+            break
+    section = remainder[:stop] if stop is not None else remainder
+    return header, section.strip(), []
+
+
+def _line_is_page_marker(line: str) -> bool:
+    compact = re.sub(r"\s+", " ", line.strip())
+    return bool(
+        re.fullmatch(r"(?:page\s+)?\d+", compact, re.I)
+        or re.fullmatch(r"[-–—]?\s*\d+\s*[-–—]?", compact)
+    )
+
+
+def _clean_section(section: str) -> str:
+    raw_lines = [line.strip() for line in section.splitlines() if line.strip()]
+    line_counts: dict[str, int] = {}
+    for line in raw_lines:
+        key = re.sub(r"\s+", " ", line).casefold()
+        line_counts[key] = line_counts.get(key, 0) + 1
+
+    # Repeated short lines are often running headers/footers in publisher
+    # proofs. Do not remove publisher names, which legitimately recur in book
+    # references and are useful for classification.
+    repeated_layout_lines = {
+        key
+        for key, count in line_counts.items()
+        if count >= 2
+        and len(key) <= 100
+        and "press" not in key
+        and "university" not in key
+        and "publisher" not in key
+    }
+
+    lines = []
+    for line in section.splitlines():
+        line = line.strip()
+        if not line or line.startswith("<!-- PAGE "):
+            continue
+        if _line_is_page_marker(line):
+            continue
+        if re.fullmatch(r"for peer review", line, re.I):
+            continue
+        if re.fullmatch(r"page\s+\d+\s+of\s+\d+", line, re.I):
+            continue
+        normalized_line = re.sub(r"\s+", " ", line).casefold()
+        if normalized_line in repeated_layout_lines:
+            continue
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _numbered_markers_are_plausible(markers: list[re.Match[str]]) -> bool:
+    """Reject page/footer numbers that happen to look like `123.` starts."""
+    numbers = [int(marker.group(1)) for marker in markers]
+    if len(numbers) < 2:
+        return False
+    sequential = sum(b == a + 1 for a, b in zip(numbers, numbers[1:]))
+    increasing = sum(b > a for a, b in zip(numbers, numbers[1:]))
+    pair_count = len(numbers) - 1
+    return (
+        numbers[0] <= 10
+        and sequential / pair_count >= 0.6
+        or increasing / pair_count >= 0.9
+        and sequential / pair_count >= 0.5
+    )
+
+
+def _segment_at_starts(section: str, starts: list[re.Match[str]]) -> list[tuple[int | None, str]]:
+    segments: list[tuple[int | None, str]] = []
+    for index, match in enumerate(starts):
+        end = starts[index + 1].start() if index + 1 < len(starts) else len(section)
+        raw = section[match.start() : end].strip()
+        segments.append((None, raw))
+    return segments
+
+
+def segment_references(section: str) -> list[tuple[int | None, str]]:
+    section = _clean_section(section)
+    if not section:
+        return []
+
+    # PDF extraction can preserve the left-margin marker inserted by
+    # ``extract_pdf_text``. Prefer it over author/year guessing because a
+    # wrapped author list can look like a new author/year reference.
+    layout_starts = list(
+        re.finditer(
+            re.escape(PDF_REFERENCE_START)
+            + r"(?=[A-Z][^\n]{0,500}\((?:18|19|20)\d{2}(?:[a-z]|,\s*[^)]*)?\)\.)",
+            section,
+        )
+    )
+    if len(layout_starts) >= 2:
+        segments: list[tuple[int | None, str]] = []
+        for index, match in enumerate(layout_starts):
+            end = layout_starts[index + 1].start() if index + 1 < len(layout_starts) else len(section)
+            raw = section[match.end() : end].strip()
+            # A reference list may be followed by figures before the
+            # supplementary-file heading. Those later left-margin markers are
+            # not references; trim them from the final reference segment.
+            trailing_marker = raw.find(PDF_REFERENCE_START)
+            if trailing_marker >= 0:
+                raw = raw[:trailing_marker].strip()
+            if raw:
+                segments.append((None, raw))
+        if len(segments) >= 2:
+            return segments
+
+    numbered = list(IEEE_START.finditer(section))
+    if len(numbered) < 2:
+        numbered = list(NUMBERED_START.finditer(section))
+
+    if len(numbered) >= 2 and _numbered_markers_are_plausible(numbered):
+        segments: list[tuple[int | None, str]] = []
+        for index, match in enumerate(numbered):
+            end = numbered[index + 1].start() if index + 1 < len(numbered) else len(section)
+            raw = section[match.start():end].strip()
+            number = int(match.group(1))
+            segments.append((number, raw))
+        return segments
+
+    author_year = list(AUTHOR_YEAR_START.finditer(section))
+    if len(author_year) >= 2:
+        return _segment_at_starts(section, author_year)
+
+    # Author-year styles often have blank lines between records. This fallback
+    # preserves the whole chunk when a PDF has lost that structure.
+    chunks = [chunk.strip() for chunk in re.split(r"\n\s*\n+", section) if chunk.strip()]
+    if len(chunks) >= 2:
+        return [(None, chunk) for chunk in chunks]
+
+    # Last resort: one citation per line, but only when lines look citation-like.
+    lines = [line.strip() for line in section.splitlines() if line.strip()]
+    if len(lines) >= 2:
+        return [(None, line) for line in lines]
+    return [(None, section.strip())]
+
+
+def normalize_whitespace(value: str) -> str:
+    return re.sub(r"\s+", " ", value).strip(" \t,;.")
+
+
+def canonical_isbn(value: str) -> str | None:
+    compact = re.sub(r"[^0-9Xx]", "", value).upper()
+    if len(compact) in (10, 13):
+        return compact
+    return None
+
+
+def extract_identifiers(raw: str) -> tuple[str | None, str | None, str | None]:
+    doi = DOI.search(raw)
+    doi_value = re.sub(r"\s+", "", doi.group(0)).rstrip(".,;)") if doi else None
+    arxiv = ARXIV.search(raw)
+    arxiv_value = arxiv.group(1) if arxiv else None
+
+    isbn_value = None
+    for match in ISBN.finditer(raw):
+        candidate = canonical_isbn(match.group(1) or match.group(2))
+        if candidate:
+            isbn_value = candidate
+            break
+    return doi_value, isbn_value, arxiv_value
+
+
+def remove_artifacts(value: str) -> tuple[str, list[str]]:
+    flags: list[str] = []
+    cleaned = value
+    for name, pattern in ARTIFACT_PATTERNS:
+        if pattern.search(cleaned):
+            flags.append(name)
+            cleaned = pattern.sub(" ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    cleaned = re.sub(r"(?:,\s*){2,}", ", ", cleaned)
+    cleaned = re.sub(r"\s+([,.;:])", r"\1", cleaned)
+    cleaned = re.sub(r"([,;])\s*(?=[,.])", r"\1", cleaned)
+    cleaned = re.sub(r"\(\s*\)", "", cleaned)
+    return cleaned.strip(), flags
+
+
+def strip_leading_reference_number(value: str) -> str:
+    value = re.sub(r"^\s*\[\d{1,4}\]\s*", "", value)
+    value = re.sub(r"^\s*\d{1,4}[.)]\s*", "", value)
+    return value.strip()
+
+
+def title_candidates(raw: str, cleaned: str) -> list[TitleCandidate]:
+    candidates: list[TitleCandidate] = []
+
+    for match in QUOTED_TITLE.finditer(raw):
+        title, _ = remove_artifacts(normalize_whitespace(match.group(1)))
+        if len(title.split()) >= 2:
+            candidates.append(TitleCandidate(title, "quoted", 0.96))
+
+    year = YEAR.search(cleaned)
+    if year:
+        after_year = cleaned[year.end() :]
+        # Accompanying publication dates such as `(2025, April).` occur in
+        # conference references. Remove the date wrapper before extracting
+        # the title; otherwise the parser may fall back to an author fragment.
+        after_year = re.sub(
+            r"^\s*(?:,\s*[^)]*)?\s*\)\.\s*",
+            "",
+            after_year,
+        )
+        after_year = after_year.lstrip(" .,;:()-")
+        after_year, _ = remove_artifacts(after_year)
+        # Do not treat abbreviations such as `vs.` or `e.g.` inside a title as
+        # the end of the title sentence.
+        sentence = re.split(
+            r"(?<!vs\.)(?<!e\.g\.)(?<!i\.e\.)(?<!etc\.)(?<=[.!?])\s+",
+            after_year,
+            maxsplit=1,
+            flags=re.I,
+        )[0]
+        sentence = normalize_whitespace(sentence)
+        if len(sentence.split()) >= 3:
+            candidates.append(TitleCandidate(sentence, "after_year", 0.80))
+
+    # Book-like references often have the title before publisher/year. Generate
+    # a conservative sentence candidate for the lookup layer to evaluate later.
+    pieces = [normalize_whitespace(piece) for piece in re.split(r"[.!?]\s+", cleaned)]
+    pieces = [piece for piece in pieces if len(piece.split()) >= 3]
+    if pieces:
+        longest = max(pieces, key=lambda piece: (len(piece.split()), len(piece)))
+        longest = re.sub(r"^.*?\b(?:et al\.?|and)\b\s*", "", longest, flags=re.I)
+        longest = normalize_whitespace(longest)
+        if len(longest.split()) >= 3:
+            candidates.append(TitleCandidate(longest, "sentence_heuristic", 0.58))
+
+        # Common book form: `Author, Book Title. Publisher, Year.` Keep the
+        # portion after the first author separator as a lower-confidence
+        # candidate rather than forcing the author into the title.
+        book_piece = pieces[0]
+        if "," in book_piece:
+            after_author = normalize_whitespace(book_piece.split(",", 1)[1])
+            if len(after_author.split()) >= 3:
+                candidates.append(TitleCandidate(after_author, "after_author", 0.64))
+
+    unique: list[TitleCandidate] = []
+    seen: set[str] = set()
+    for candidate in sorted(candidates, key=lambda item: item.confidence, reverse=True):
+        key = candidate.title.casefold()
+        if key not in seen:
+            unique.append(candidate)
+            seen.add(key)
+    return unique[:5]
+
+
+def classify_citation(raw: str, doi: str | None, isbn: str | None) -> str:
+    lower = raw.casefold()
+    if isbn or re.search(
+        r"\b(?:publisher|press|edition|isbn|monograph|macmillan|guilford publications|"
+        r"macarthur foundation|doctoral dissertation|dissertation)\b",
+        lower,
+    ):
+        return "book_or_report"
+    if re.search(r"\b(?:rfc|iso\s*\d+|nist|ieee\s+std|w3c)\b", lower):
+        return "standard_or_web"
+    if doi or re.search(r"\b(?:journal|proceedings|conference|vol\.?|doi)\b", lower):
+        return "article_or_conference"
+    return "unknown"
+
+
+def diagnose_reference(number: int | None, raw: str) -> ReferenceDiagnostic:
+    raw = raw.strip()
+    without_number = strip_leading_reference_number(raw)
+    cleaned, artifact_flags = remove_artifacts(without_number)
+    doi, isbn, arxiv_id = extract_identifiers(raw)
+    candidates = title_candidates(raw, cleaned)
+    citation_type = classify_citation(raw, doi, isbn)
+    notes: list[str] = []
+
+    if not candidates:
+        notes.append("No reliable title candidate was extracted.")
+    if artifact_flags:
+        notes.append("Layout-like page/line markers were removed from the candidate text.")
+    if len(candidates) > 1:
+        notes.append("Multiple title candidates were retained for later lookup.")
+    if citation_type == "book_or_report" and not isbn:
+        notes.append("Book/report detected without an ISBN; title and author matching may be weaker.")
+    if doi:
+        notes.append("A DOI was found; future lookup should treat it as the strongest identifier.")
+    if isbn:
+        notes.append("An ISBN was found; future lookup should try exact ISBN matching first.")
+
+    layout_artifacts = set(artifact_flags) - {"page_or_line_label"}
+    if doi or isbn:
+        confidence = "high" if candidates else "medium"
+    elif candidates and candidates[0].method == "quoted":
+        confidence = "high" if not layout_artifacts else "medium"
+    elif candidates and not layout_artifacts:
+        confidence = "medium"
+    else:
+        confidence = "low"
+
+    return ReferenceDiagnostic(
+        number=number,
+        raw_citation=raw,
+        cleaned_citation=cleaned,
+        title_candidates=candidates,
+        doi=doi,
+        isbn=isbn,
+        arxiv_id=arxiv_id,
+        citation_type=citation_type,
+        artifact_flags=artifact_flags,
+        parser_confidence=confidence,
+        parser_notes=notes,
+    )
+
+
+def diagnose_text(text: str, source: str) -> DocumentDiagnostics:
+    header, section, warnings = find_references_section(text)
+    segments = segment_references(section)
+    diagnostics = [diagnose_reference(number, raw) for number, raw in segments]
+    return DocumentDiagnostics(source, header, len(diagnostics), diagnostics, warnings)
+
+
+def render_text(result: DocumentDiagnostics) -> str:
+    lines = [
+        f"Source: {result.source}",
+        f"References heading: {result.references_header or 'not found'}",
+        f"References detected: {result.reference_count}",
+    ]
+    for warning in result.warnings:
+        lines.append(f"Warning: {warning}")
+
+    for index, item in enumerate(result.diagnostics, start=1):
+        lines.extend(
+            [
+                "",
+                f"[{item.number or index}] {item.parser_confidence.upper()} confidence | {item.citation_type}",
+                f"Raw: {item.raw_citation}",
+                f"Cleaned: {item.cleaned_citation}",
+                f"DOI: {item.doi or '-'} | ISBN: {item.isbn or '-'} | arXiv: {item.arxiv_id or '-'}",
+                f"Artifacts: {', '.join(item.artifact_flags) or '-'}",
+                "Title candidates:",
+            ]
+        )
+        if item.title_candidates:
+            for candidate in item.title_candidates:
+                lines.append(f"  - [{candidate.confidence:.2f}, {candidate.method}] {candidate.title}")
+        else:
+            lines.append("  - none")
+        for note in item.parser_notes:
+            lines.append(f"Note: {note}")
+    return "\n".join(lines) + "\n"
+
+
+def parse_args(argv: Iterable[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Show how citations were parsed from a PDF; does not query databases yet."
+    )
+    parser.add_argument("pdf", type=Path, nargs="?", help="PDF to inspect")
+    parser.add_argument("--text-file", type=Path, help="Use a text fixture instead of a PDF")
+    parser.add_argument("--json", dest="json_path", type=Path, help="Write diagnostics as JSON")
+    args = parser.parse_args(list(argv))
+    if bool(args.pdf) == bool(args.text_file):
+        parser.error("provide exactly one PDF path or --text-file")
+    return args
+
+
+def main(argv: Iterable[str] | None = None) -> int:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+    args = parse_args(argv or sys.argv[1:])
+    source_path = args.pdf or args.text_file
+    assert source_path is not None
+    try:
+        text = extract_pdf_text(source_path) if args.pdf else source_path.read_text(encoding="utf-8")
+        result = diagnose_text(text, str(source_path))
+    except Exception as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    print(render_text(result), end="")
+    if args.json_path:
+        args.json_path.write_text(json.dumps(asdict(result), indent=2), encoding="utf-8")
+        print(f"JSON diagnostics written to {args.json_path}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
