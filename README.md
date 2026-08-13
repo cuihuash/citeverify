@@ -6,6 +6,10 @@ CiteVerify is a local tool for checking the reference lists in research
 papers. It extracts citations from PDF and modern Word files, searches for
 matching scholarly records, and creates an HTML report for human review.
 
+## Interface preview
+
+![CiteVerify upload interface](Interface.png)
+
 ## What it does
 
 CiteVerify:
