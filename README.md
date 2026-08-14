@@ -327,6 +327,14 @@ Make sure the PowerShell or launcher window is still open. Refresh the browser
 with **Ctrl+F5**. If an older copy is using port 8765, close that copy with
 **Ctrl+C** and start CiteVerify again.
 
+### The results page shows only the PDF filename
+
+This means the PDF was uploaded successfully but no references were extracted.
+It is not caused by missing OpenAlex or Semantic Scholar keys. Check the
+diagnostic notice in the report for the detected References heading and parser
+notes. The PDF may be scanned, may use an unusual heading, or may have a layout
+that needs additional parser support.
+
 ### The page says that a port is already in use
 
 Another copy is already running. Close it with **Ctrl+C**, or use another port:

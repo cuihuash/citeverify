@@ -246,7 +246,7 @@ def report_body(documents: list[dict[str, Any]]) -> str:
         )
 
     sections: list[str] = [
-        '<section class="hero"><h1>CiteVerify results</h1>'
+        '<section class="hero" id="results-top"><h1>CiteVerify results</h1>'
         f'<p>{len(documents)} document{"s" if len(documents) != 1 else ""} processed. '
         'Conflicts appear first, followed by unverified items and then verified items. '
         'Unverified does not mean fabricated.</p></section>',
@@ -258,10 +258,31 @@ def report_body(documents: list[dict[str, Any]]) -> str:
         inner = body_match.group(1) if body_match else report
         inner = inner.replace('<h1>CiteVerify report</h1>', '')
         filename = html.escape(str(document["filename"]))
+        diagnostics = document.get("diagnostics")
+        if not document["results"]:
+            references_header = html.escape(
+                getattr(diagnostics, "references_header", None) or "not detected"
+            )
+            warnings = getattr(diagnostics, "warnings", []) or []
+            warning_html = "".join(
+                f"<li>{html.escape(str(warning))}</li>" for warning in warnings
+            )
+            if not warning_html:
+                warning_html = "<li>No parser warning was recorded.</li>"
+            inner += (
+                '<div class="notice">'
+                '<strong>No references were extracted from this document.</strong>'
+                '<p>This usually means the PDF reference heading was not recognized, '
+                'the reference list is an image scan, or the PDF layout needs a parser adjustment.</p>'
+                f"<p><strong>References heading detected:</strong> {references_header}</p>"
+                f"<p><strong>Parser notes:</strong></p><ul>{warning_html}</ul>"
+                '</div>'
+            )
+        back_target = "#document-list" if len(documents) > 1 else "#results-top"
         sections.append(
             f'<section class="doc-section" id="document-{index}">'
             f'<h2>{filename}</h2>{inner}'
-            '<p><a href="#document-list">Back to document list</a></p>'
+            f'<p><a href="{back_target}">Back to document list</a></p>'
             '</section>'
         )
     sections.append('<p><a class="button" href="/">Process another set of files</a></p>')
@@ -272,7 +293,12 @@ class CitationHandler(BaseHTTPRequestHandler):
     server_version = "CiteVerify/0.1.0"
 
     def do_GET(self) -> None:  # noqa: N802
-        if urlparse(self.path).path != "/":
+        path = urlparse(self.path).path
+        if path == "/favicon.ico":
+            self.send_response(HTTPStatus.NO_CONTENT)
+            self.end_headers()
+            return
+        if path != "/":
             self.send_error(HTTPStatus.NOT_FOUND)
             return
         self.send_html(upload_page())
