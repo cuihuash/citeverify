@@ -21,20 +21,21 @@ except ImportError:  # pragma: no cover - exercised by the command-line error pa
 
 
 REFERENCE_HEADERS = re.compile(
-    r"(?im)^\s*(?:references|bibliography|references and bibliography|literature cited)\s*:?[ \t]*$"
+    r"(?im)^\s*(?:references and bibliography|literature cited|references|bibliography)"
+    r"(?:\s*(?:\((?:continued|cont\.?|2)\)|[-–—]\s*continued))?\s*:?[ \t]*$"
 )
 PDF_REFERENCE_START = "@@REF_START@@"
 NEXT_SECTION = re.compile(
-    r"(?im)^\s*(?:@@REF_START@@)?\s*(?:appendix|appendices|acknowledg(?:e)?ments|supplementary material|supplementary file|author contributions|conflict of interest|references)\b.*$"
+    r"(?im)^\s*(?:@@REF_START@@)?\s*(?:appendix|appendices|acknowledg(?:e)?ments|supplementary material|supplementary file|author contributions|author biographies|author biography|conflict of interest)\b.*$"
 )
 IEEE_START = re.compile(r"(?m)^\s*\[(\d{1,4})\]\s+")
-NUMBERED_START = re.compile(r"(?m)^\s*(\d{1,4})[.)]\s+")
+NUMBERED_START = re.compile(r"(?m)^\s*(\d{1,3})[.)]\s+")
 AUTHOR_YEAR_START = re.compile(
     # Some references have a long author list that wraps across several PDF
     # lines. Allow enough room for those lists so a repeated lead author does
     # not get merged into the preceding reference.
-    r"(?m)^(?=(?:[A-Z][^\n]{0,500}\((?:18|19|20)\d{2}[a-z]?\)\.)"
-    r"|(?:[A-Z][^\n]{0,500}\n\s*\((?:18|19|20)\d{2}[a-z]?\)\.))"
+    r"(?m)^(?=(?:[A-Z][^\n]{0,500}\((?:18|19|20)\d{2}[a-z]?\)(?:\.)?\s)"
+    r"|(?:[A-Z][^\n]{0,500}\n\s*\((?:18|19|20)\d{2}[a-z]?\)(?:\.)?\s))"
 )
 YEAR = re.compile(r"\b(?:18|19|20)\d{2}\b")
 DOI = re.compile(r"\b10\.\d{4,9}/(?:[^\s<>\"']|(?<=-)\s+)+", re.I)
@@ -65,7 +66,7 @@ ARTIFACT_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ),
     (
         "line_marker",
-        re.compile(r"\b(?:l|ll)\.?\s*\d+(?:\s*[-–—]\s*\d+)?\b", re.I),
+        re.compile(r"\b(?:l|ll)\.?\s*(?!18|19|20)\d+(?:\s*[-–—]\s*\d+)?\b", re.I),
     ),
 )
 
@@ -120,25 +121,100 @@ def extract_pdf_text(path: Path) -> str:
                     text = "".join(span.get("text", "") for span in line.get("spans", [])).strip()
                     if text:
                         lines.append((line["bbox"][1], line["bbox"][0], text))
-            lines.sort(key=lambda entry: (entry[0], entry[1]))
 
-            body_left_edges = [
-                x
-                for y, x, text in lines
-                if 45 < y < page_height - 45
-                and x > 20
-                and text.casefold() != "for peer review"
+            # Some publishers store a reference number in a separate text
+            # object from the citation itself. Join those objects when they
+            # share a baseline; otherwise `1.` and its authors can be split
+            # into separate pseudo-references.
+            lines.sort(key=lambda entry: (entry[0], entry[1]))
+            number_pairs: dict[int, int] = {}
+            paired_indices: set[int] = set()
+            for index, (y, x, text) in enumerate(lines):
+                if not re.fullmatch(r"(?:\[\d{1,4}\]|\d{1,4}[.)])", text):
+                    continue
+                nearby = [
+                    candidate
+                    for candidate in range(max(0, index - 3), min(len(lines), index + 4))
+                    if candidate != index
+                    and candidate not in paired_indices
+                    and not re.fullmatch(
+                        r"(?:\[\d{1,4}\]|\d{1,4}[.)])", lines[candidate][2]
+                    )
+                    and abs(lines[candidate][0] - y) <= 16
+                    and lines[candidate][1] > x
+                    and lines[candidate][1] - x < 40
+                ]
+                if nearby:
+                    candidate = min(nearby, key=lambda item: abs(lines[item][0] - y))
+                    number_pairs[index] = candidate
+                    paired_indices.update({index, candidate})
+
+            merged_lines: list[tuple[float, float, str]] = []
+            index = 0
+            while index < len(lines):
+                y, x, text = lines[index]
+                if index in number_pairs:
+                    candidate = number_pairs[index]
+                    candidate_y, candidate_x, candidate_text = lines[candidate]
+                    merged_lines.append((min(y, candidate_y), min(x, candidate_x), f"{text} {candidate_text}"))
+                    index += 1
+                    continue
+                if index in paired_indices:
+                    index += 1
+                    continue
+                merged_lines.append((y, x, text))
+                index += 1
+            lines = merged_lines
+
+            # PDF text is often stored in visual order rather than reading
+            # order. For a two-column reference list, sorting only by y
+            # interleaves the left and right columns and makes the parser see
+            # only the first column as reference starts. Detect large x gaps
+            # and read each column from top to bottom before moving right.
+            x_values = sorted({round(x, 1) for _, x, _ in lines if x > 20})
+            column_breaks = [
+                index
+                for index in range(len(x_values) - 1)
+                if x_values[index + 1] - x_values[index] >= 40
             ]
-            body_left = min(body_left_edges) if body_left_edges else 72.0
+            column_boundaries = [
+                (x_values[index] + x_values[index + 1]) / 2
+                for index in column_breaks
+            ]
+
+            def column_index(x: float) -> int:
+                return sum(x > boundary for boundary in column_boundaries)
+
+            column_lefts: dict[int, float] = {}
+            for _, x, _ in lines:
+                if x > 20:
+                    group = column_index(x)
+                    column_lefts[group] = min(column_lefts.get(group, x), x)
+
+            lines.sort(key=lambda entry: (column_index(entry[1]), entry[0], entry[1]))
             page_lines: list[str] = []
             for y, x, text in lines:
-                if y <= 45 or y >= page_height - 45:
-                    continue
                 if text.casefold() == "for peer review":
                     continue
                 if re.fullmatch(r"(?:page\s+)?\d+(?:\s+of\s+\d+)?", text, re.I):
                     continue
-                marker = PDF_REFERENCE_START if x <= body_left + 2 else ""
+                if re.search(r"\bdownloaded from\s+https?://", text, re.I):
+                    continue
+                if re.search(r"\bvolume\s+\d+\s*,\s*issue\s+\d+\b", text, re.I):
+                    continue
+                # Keep content near the top of a page. In some publisher
+                # templates the first reference line begins there, and
+                # dropping it loses the authors. Repeated running headers are
+                # removed later by _clean_section.
+                group = column_index(x)
+                left_edge = column_lefts.get(group, x)
+                marker = (
+                    ""
+                    if REFERENCE_HEADERS.fullmatch(text)
+                    or IEEE_START.match(text)
+                    or NUMBERED_START.match(text)
+                    else PDF_REFERENCE_START if x <= left_edge + 3 else ""
+                )
                 page_lines.append(marker + text)
             page_text = "\n".join(page_lines)
             pages.append(f"\n<!-- PAGE {page_number} -->\n{page_text}")
@@ -207,8 +283,36 @@ def _clean_section(section: str) -> str:
             continue
         if re.fullmatch(r"page\s+\d+\s+of\s+\d+", line, re.I):
             continue
+        if REFERENCE_HEADERS.fullmatch(line):
+            # A repeated running header such as "References" can appear at
+            # the top of every bibliography page. The first heading already
+            # delimited the section, so later copies are layout noise.
+            continue
         normalized_line = re.sub(r"\s+", " ", line).casefold()
         if normalized_line in repeated_layout_lines:
+            continue
+        if lines and lines[-1].endswith("\xad"):
+            # Soft hyphens at the end of a PDF line are layout instructions,
+            # not part of the title. Join the word across the line break.
+            lines[-1] = lines[-1][:-1] + line
+            continue
+        if (
+            lines
+            and re.search(r"[A-Za-z]-$", lines[-1])
+            and re.match(r"^[a-z]", line)
+        ):
+            # Some PDFs expose a visible line-break hyphen instead of a soft
+            # hyphen. Rejoin it when the next line clearly continues a word.
+            lines[-1] = lines[-1][:-1] + line
+            continue
+        if (
+            lines
+            and re.search(r"https?://\S+[./-]$", lines[-1], re.I)
+            and re.match(r"^[a-z0-9]", line)
+        ):
+            # Preserve URLs split at a line boundary, such as `https://doi.`
+            # followed by `org/...`.
+            lines[-1] += line
             continue
         lines.append(line)
     return "\n".join(lines)
@@ -250,7 +354,7 @@ def segment_references(section: str) -> list[tuple[int | None, str]]:
     layout_starts = list(
         re.finditer(
             re.escape(PDF_REFERENCE_START)
-            + r"(?=[A-Z][^\n]{0,500}\((?:18|19|20)\d{2}(?:[a-z]|,\s*[^)]*)?\)\.)",
+            + r"(?=[A-Z][^\n]{0,500}\((?:18|19|20)\d{2}(?:[a-z]|,\s*[^)]*)?\)(?:\.)?\s)",
             section,
         )
     )
@@ -355,6 +459,30 @@ def title_candidates(raw: str, cleaned: str) -> list[TitleCandidate]:
         if len(title.split()) >= 2:
             candidates.append(TitleCandidate(title, "quoted", 0.96))
 
+    # In conference citations, the real work title normally appears before
+    # `In:`. A year inside the proceedings title can otherwise be mistaken
+    # for the author/year boundary and produce the conference name instead.
+    in_marker = re.search(r"\bIn:\s+", cleaned, re.I)
+    if in_marker:
+        before_in = cleaned[: in_marker.start()].strip()
+        author_boundary = re.search(r"\.\s+(?=[A-Z])", before_in)
+        if author_boundary:
+            title = normalize_whitespace(before_in[author_boundary.end() :])
+            if len(title.split()) >= 2:
+                candidates.append(TitleCandidate(title, "before_in", 0.90))
+
+    # Book, report, and no-year references often place the title after an
+    # author list without a publication year before it. Use the first clear
+    # author/title boundary instead of stripping text after every occurrence
+    # of the word `and` inside the title.
+    author_boundary = re.search(r"\.\s+(?=[A-Z])", cleaned)
+    if author_boundary:
+        after_author = cleaned[author_boundary.end() :]
+        sentence = re.split(r"(?<=[.!?])\s+", after_author, maxsplit=1)[0]
+        sentence = normalize_whitespace(sentence)
+        if len(sentence.split()) >= 2:
+            candidates.append(TitleCandidate(sentence, "after_author", 0.74))
+
     year = YEAR.search(cleaned)
     if year:
         after_year = cleaned[year.end() :]
@@ -371,13 +499,13 @@ def title_candidates(raw: str, cleaned: str) -> list[TitleCandidate]:
         # Do not treat abbreviations such as `vs.` or `e.g.` inside a title as
         # the end of the title sentence.
         sentence = re.split(
-            r"(?<!vs\.)(?<!e\.g\.)(?<!i\.e\.)(?<!etc\.)(?<=[.!?])\s+",
+            r"(?<!vs\.)(?<!e\.g\.)(?<!i\.e\.)(?<!etc\.)(?<!U\.S\.)(?<!U\.S\.A\.)(?<=[.!?])\s+",
             after_year,
             maxsplit=1,
             flags=re.I,
         )[0]
         sentence = normalize_whitespace(sentence)
-        if len(sentence.split()) >= 3:
+        if len(sentence.split()) >= 2:
             candidates.append(TitleCandidate(sentence, "after_year", 0.80))
 
     # Book-like references often have the title before publisher/year. Generate
@@ -411,10 +539,11 @@ def title_candidates(raw: str, cleaned: str) -> list[TitleCandidate]:
 
 
 def classify_citation(raw: str, doi: str | None, isbn: str | None) -> str:
-    lower = raw.casefold()
+    lower = normalize_whitespace(raw).casefold()
     if isbn or re.search(
         r"\b(?:publisher|press|edition|isbn|monograph|macmillan|guilford publications|"
-        r"macarthur foundation|doctoral dissertation|dissertation)\b",
+        r"macarthur foundation|doctoral dissertation|dissertation|springer|reaktion books|"
+        r"research center|research centre|report)\b",
         lower,
     ):
         return "book_or_report"

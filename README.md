@@ -1,10 +1,48 @@
 # CiteVerify
 
-**Current version: 0.1.0**
+**Current version: 0.1.2**
 
-CiteVerify is a local tool for checking the reference lists in research
-papers. It extracts citations from PDF and modern Word files, searches for
-matching scholarly records, and creates an HTML report for human review.
+CiteVerify is a local tool for reviewing references in research papers. It
+extracts references from PDF and Word files, looks for matching scholarly
+records, and creates a readable HTML report.
+
+It is designed to help researchers find citations that deserve a closer look.
+It is not an automatic fact-checker, and **unverified does not mean fake**.
+
+[GitHub repository](https://github.com/cuihuash/citeverify)
+
+## What CiteVerify accepts
+
+The HTML interface accepts multiple files at once:
+
+- PDF files (`.pdf`)
+- Modern Word files (`.docx`)
+
+Older Word files (`.doc`) should be saved as `.docx` before uploading.
+
+## What CiteVerify produces
+
+For every extracted reference, the HTML report shows:
+
+- the full processed reference;
+- the text extracted from the original file;
+- the DOI, when one is present;
+- a clickable DOI link;
+- the verification status;
+- the evidence sources used;
+- an explanation when the reference is unverified or conflicting.
+
+When several papers are uploaded, the report provides links to jump between
+each document's results. Results are ordered by attention level:
+
+1. Conflict
+2. Unverified
+3. Unable to check
+4. Verified title variant
+5. Verified
+
+The original reference order or number is retained so results can be compared
+with the paper.
 
 ## Interface preview
 
@@ -12,332 +50,149 @@ matching scholarly records, and creates an HTML report for human review.
 
 ![CiteVerify results interface](Interface2.png)
 
-## What it does
-
-CiteVerify:
-
-1. Finds the reference list in each uploaded document.
-2. Extracts the references.
-3. Corrects some common PDF-reading problems, including page, line, and
-   paragraph numbers accidentally becoming part of a title.
-4. Finds DOI and other identifiers when they are present.
-5. Checks references against DOI, scholarly, and book databases.
-6. Produces an HTML report with the evidence and clickable DOI links.
-
-It is deliberately cautious. **Unverified** does not mean fake. It means that
-the available information was not enough to confirm the source. Books, older
-publications, webpages, unusual titles, and poorly extracted PDF text can all
-produce an unverified result.
-
-CiteVerify is a review aid, not an automatic final decision-maker.
-
-## Input and output
-
-The HTML interface accepts multiple files in one run:
-
-- PDF files (`.pdf`)
-- Modern Word files (`.docx`)
-
-Older Word files ending in `.doc` should be opened in Word and saved as
-`.docx` first.
-
-The HTML report includes:
-
-- every processed reference;
-- the original extracted text;
-- the cleaned or processed reference;
-- DOI information and a clickable DOI link, when available;
-- verification status;
-- evidence sources;
-- an explanation for unverified or conflicting results.
-
-When several documents are uploaded, the report includes a document list at
-the top. Each filename links to its results, and each document section links
-back to the list.
-
-Results are ordered by attention level:
-
-1. **Conflict**
-2. **Unverified**
-3. **Unable to check**
-4. **Verified title variant**
-5. **Verified**
-
-The original reference number is preserved even after the results are sorted.
-
 ## How verification works
 
-- References with DOIs are checked through Crossref and a DOI resolver.
-- If supplied by the user, OpenAlex and Semantic Scholar provide independent
-  scholarly cross-checks.
-- Books and reports are searched in Open Library and Google Books.
-- Titles are compared cautiously because databases may use different editions,
-  punctuation, subtitles, or wording.
+CiteVerify uses several sources when appropriate:
 
-The tool does not label a reference fake simply because a search finds no
-match.
+- Crossref and the DOI resolver for references with DOIs;
+- OpenAlex and Semantic Scholar for optional independent scholarly cross-checks;
+- Open Library and Google Books for books and reports.
 
-## Quick start
+Titles are compared cautiously because databases may use different
+punctuation, subtitles, editions, or wording. A failed search can happen for
+many innocent reasons, including a missing DOI, an older book, an unusual
+title, or imperfect PDF text extraction.
 
-### Requirements
+## Quick start on Windows
 
-- Windows, macOS, or Linux
-- Python 3.10 or newer from [python.org](https://www.python.org/downloads/)
-- This repository copied or downloaded to your computer
+### 1. Install Python
 
-During Python installation, select **Add Python to PATH** if that option is
-shown.
+Install [Python 3.10 or newer](https://www.python.org/downloads/). During
+installation, select **Add Python to PATH** if that option is shown.
 
-### Install the dependencies
+### 2. Download CiteVerify
 
-On Windows, open PowerShell and run these commands, one at a time. Replace the
-path with the location of your local CiteVerify folder:
+Download the repository from GitHub and unzip it, or clone it with Git. Keep
+all of the files together in the `CiteVerify` folder.
+
+### 3. Install the required Python packages
+
+Open PowerShell, move into the CiteVerify folder, and run:
 
 ```powershell
-cd "C:\path\to\CiteVerify"
 python -m pip install -r requirements.txt
 ```
 
-If Windows cannot find `python`, try `py` instead:
+If Windows does not recognize `python`, try:
 
 ```powershell
 py -m pip install -r requirements.txt
 ```
 
-You normally need to install the dependencies only once per computer.
+This installation is normally needed only once per computer.
 
-On macOS or Linux, open Terminal and run:
+### 4. Start CiteVerify
+
+Double-click `Start-CiteVerify.bat`. Keep the window open while using the
+browser interface.
+
+Open <http://127.0.0.1:8765/> if the browser does not open automatically.
+Select one or more files and click **Process references**.
+
+When you are finished, return to the launcher window and press **Ctrl+C**.
+
+## macOS and Linux
+
+Install Python 3.10 or newer, then open Terminal and run:
 
 ```bash
 cd "/path/to/CiteVerify"
 python3 -m pip install -r requirements.txt
-```
-
-### Run the HTML interface
-
-On Windows, without API keys:
-
-```powershell
-python .\citeverify_web.py
-```
-
-On Windows, with API-key files:
-
-```powershell
-python .\citeverify_web.py `
-  --openalex-key-file "C:\path\to\openalex.txt" `
-  --s2-api-key-file "C:\path\to\S2.txt"
-```
-
-On macOS or Linux, without API keys:
-
-```bash
-python3 ./citeverify_web.py
-```
-
-With API-key files:
-
-```bash
-python3 ./citeverify_web.py \
-  --openalex-key-file "/path/to/openalex.txt" \
-  --s2-api-key-file "/path/to/S2.txt"
-```
-
-Leave the terminal window open while using the app. Open
-<http://127.0.0.1:8765/> in your browser, upload one or more files, and click
-**Process references**.
-
-The app shows the selected filenames before processing. A paper with many
-references may take several minutes because each reference may be checked by
-more than one online service.
-
-When finished, return to the terminal and press **Ctrl+C** to stop the app.
-
-## One-click Windows launcher
-
-After installing Python and the dependencies, double-click
-`Start-CiteVerify.bat` in File Explorer. Keep the window open and visit
-<http://127.0.0.1:8765/>.
-
-The launcher looks for these optional files beside itself:
-
-- `openalex.txt`
-- `S2.txt`
-
-Each file should contain only one API key on one line. These filenames are
-ignored by Git and must never be committed to GitHub.
-
-## macOS or Linux launcher
-
-Open Terminal, move into the CiteVerify folder, and run:
-
-```bash
-cd "/path/to/CiteVerify"
 bash ./start-citeverify.sh
 ```
 
-The script looks for `openalex.txt` and `S2.txt` beside itself, just like the
-Windows launcher. Leave the terminal window open while using the browser page.
+Open <http://127.0.0.1:8765/> in a browser. Leave Terminal open while using
+the application.
 
-On macOS, you can make the script executable for future use:
+## Optional API keys
 
-```bash
-chmod +x ./start-citeverify.sh
-./start-citeverify.sh
+API keys are optional. CiteVerify still runs without them, but OpenAlex and
+Semantic Scholar cross-checks will be skipped.
+
+To enable them, create these two plain-text files in the same folder as the
+launcher:
+
+```text
+openalex.txt
+S2.txt
 ```
 
-If the files are absent, CiteVerify still runs. It simply skips the OpenAlex
-and Semantic Scholar cross-checks.
+Put only the relevant key in each file. Do not add quotes or explanatory
+text.
 
-## Getting your own API keys
+Get keys from the providers' official pages:
 
-API keys are optional, but they provide additional independent evidence.
+- [OpenAlex API keys](https://openalex.org/settings/api)
+- [Semantic Scholar API](https://www.semanticscholar.org/product/api)
 
-### OpenAlex
+The filenames are excluded by `.gitignore`. Never commit or upload them.
 
-1. Visit the [OpenAlex API key page](https://openalex.org/settings/api).
-2. Create or sign in to an OpenAlex account.
-3. Copy the key into a plain-text file named `openalex.txt`.
-4. Put `openalex.txt` beside `Start-CiteVerify.bat`, or pass its path in the
-   PowerShell command.
+## Privacy and security
 
-OpenAlex's official documentation is available at
-[developers.openalex.org](https://developers.openalex.org/api-reference/authentication).
+- CiteVerify runs locally on your computer. Uploaded papers are not uploaded
+  to outside servers or large language models.
+- CiteVerify does not use a large language model to read, rewrite, or judge
+  your references.
+- When enabled, lookup services mean online scholarly and book-search
+  services such as Crossref, OpenAlex, Semantic Scholar, Google Books, and
+  Open Library. CiteVerify may send limited reference information, such as a
+  DOI or title, to these services to look for a matching record.
+- API keys are read locally and are not placed in reports.
+- Do not upload private papers, reports, diagnostics, or API keys to a public
+  repository.
 
-### Semantic Scholar
+## Known limitations
 
-1. Visit the [Semantic Scholar API page](https://www.semanticscholar.org/product/api).
-2. Request an API key using the form on that page.
-3. Copy the key into a plain-text file named `S2.txt`.
-4. Put `S2.txt` beside `Start-CiteVerify.bat`, or pass its path in the
-   PowerShell command.
+PDFs are designed for visual display, not clean data extraction. Results may
+need manual review when a paper contains:
 
-Semantic Scholar's API documentation explains that API keys are sent in the
-`x-api-key` request header.
+- scanned or image-only pages;
+- unusual fonts or encoding;
+- complex tables or multi-column layouts;
+- page, line, or paragraph numbers in the reference text;
+- references split across pages;
+- books, reports, webpages, or sources without DOIs.
 
-### Protect your keys
+The report includes both the extracted text and the processed reference so the
+result can be compared with the original paper.
 
-Do not:
+## Troubleshooting
 
-- paste keys into Python files;
-- put keys in the README;
-- commit keys to GitHub;
-- upload key files in an issue or pull request.
+### The browser page does not open
 
-The repository's `.gitignore` excludes `openalex.txt`, `S2.txt`, and common
-secret-file patterns. The program reads keys locally and does not place them
-in its reports.
+Make sure the launcher window is still open, then visit
+<http://127.0.0.1:8765/> manually.
 
-## Sharing or installing from GitHub
+### The page does not change after clicking “Process references”
 
-To share CiteVerify with another person, share the repository or its downloaded
-ZIP file. Each person should:
+Refresh the browser with **Ctrl+F5** and make sure an older CiteVerify window
+is not already using port 8765. Close an older copy with **Ctrl+C**, then
+restart the launcher.
 
-1. Install Python.
-2. Download or clone the repository.
-3. Run `python -m pip install -r requirements.txt`.
-4. Obtain their own API keys, if desired.
-5. Create their own `openalex.txt` and `S2.txt` files.
-6. Start CiteVerify with the launcher or terminal command for their operating
-   system.
+### The report shows only the document name
 
-Do not include your personal papers, generated reports, API keys, or private
-diagnostics when sharing the project.
+No references were extracted. The PDF may be scanned, may use an unusual
+reference heading, or may have a layout that needs additional parser support.
 
-## Publishing this folder to GitHub
+### A real reference is marked unverified
 
-The project is prepared as a local Git repository. Before making it public,
-review the files that will be committed and confirm that no private papers,
-reports, diagnostics, or API keys are included.
+Unverified means that CiteVerify did not find enough evidence. Compare the
+processed reference and the extracted text with the original paper, then
+review the DOI or title manually.
 
-### GitHub Desktop
+### The port is already in use
 
-GitHub Desktop is the easiest option for people who do not normally use Git
-commands:
-
-1. Install [GitHub Desktop](https://desktop.github.com/).
-2. Open GitHub Desktop and choose **Add > Add existing repository**.
-3. Select the local `CiteVerify` folder.
-4. Review the changed files. The `.gitignore` should exclude private outputs
-   and key files.
-5. Choose **Publish repository**.
-6. Give the repository the name `CiteVerify` and choose whether it should be
-   public or private.
-
-### Git commands
-
-From a terminal inside the CiteVerify folder:
-
-```powershell
-git init
-git add .
-git status
-git commit -m "Prepare CiteVerify 0.1.0"
-```
-
-Then create an empty repository named `CiteVerify` on GitHub and follow
-GitHub's instructions to connect the local repository and push it.
-
-## Optional command-line tools
-
-Most users should use the HTML interface. The command-line tools are useful
-for diagnosing extraction or creating a report from a saved diagnostics file.
-
-Extract references from a PDF:
-
-```powershell
-python .\citeverify_parser.py "C:\path\to\paper.pdf"
-```
-
-Save parser diagnostics as JSON:
-
-```powershell
-python .\citeverify_parser.py `
-  "C:\path\to\paper.pdf" `
-  --json "C:\path\to\diagnostics.json"
-```
-
-Verify a diagnostics file:
-
-```powershell
-python .\citeverify_lookup.py "C:\path\to\diagnostics.json"
-```
-
-Use API-key files with the command-line verifier:
-
-```powershell
-python .\citeverify_lookup.py `
-  "C:\path\to\diagnostics.json" `
-  --openalex-key-file "C:\path\to\openalex.txt" `
-  --s2-api-key-file "C:\path\to\S2.txt"
-```
-
-Use `--limit 2` to check only the first two references while testing.
-
-## Common problems
-
-### Python is not recognized
-
-Install Python again and select **Add Python to PATH**. You can also replace
-`python` with `py` in the commands.
-
-### The page does not change after clicking Process references
-
-Make sure the PowerShell or launcher window is still open. Refresh the browser
-with **Ctrl+F5**. If an older copy is using port 8765, close that copy with
-**Ctrl+C** and start CiteVerify again.
-
-### The results page shows only the PDF filename
-
-This means the PDF was uploaded successfully but no references were extracted.
-It is not caused by missing OpenAlex or Semantic Scholar keys. Check the
-diagnostic notice in the report for the detected References heading and parser
-notes. The PDF may be scanned, may use an unusual heading, or may have a layout
-that needs additional parser support.
-
-### The page says that a port is already in use
-
-Another copy is already running. Close it with **Ctrl+C**, or use another port:
+Close the other CiteVerify window, or start the application on another port:
 
 ```powershell
 python .\citeverify_web.py --port 8766
@@ -345,43 +200,36 @@ python .\citeverify_web.py --port 8766
 
 Then open <http://127.0.0.1:8766/>.
 
-### A real reference is marked unverified
+## Advanced command-line use
 
-This does not necessarily indicate a problem with the source. Compare the
-processed reference and the extracted text with the original paper. Check for
-PDF extraction errors, books, older sources, title variations, and missing
-DOIs. You can also search the title manually.
+Most users should use the HTML interface. The parser and lookup scripts are
+also available for diagnostics and batch workflows:
 
-### The reference list is extracted incorrectly
-
-PDFs are designed for displaying pages, not for storing clean reference data.
-Multi-column layouts, scanned pages, unusual fonts, page numbers, and line
-numbers can confuse the parser. Use the report's extracted-text section to
-compare the result with the original PDF.
-
-### An API service is unavailable
-
-Lookup services require an internet connection and may be busy, rate-limited,
-or temporarily unavailable. An unavailable service does not prove that a
-reference is false. Try again later or review the DOI and title manually.
-
-## Privacy
-
-- CiteVerify runs on your computer.
-- Uploaded files are processed by the local program.
-- DOI and title information may be sent to configured lookup services.
-- API keys are read locally and are not written into reports.
-- Keep private papers, generated reports, diagnostics, and API keys out of
-  public GitHub repositories.
+```powershell
+python .\citeverify_parser.py "C:\path\to\paper.pdf"
+python .\citeverify_parser.py "C:\path\to\paper.pdf" --json "diagnostics.json"
+python .\citeverify_lookup.py "diagnostics.json" --report "report.html"
+```
 
 ## Project files
 
-- `citeverify_web.py`: the HTML upload and results interface.
-- `citeverify_parser.py`: PDF parsing and citation diagnostics.
-- `citeverify_lookup.py`: DOI and catalog verification.
-- `Start-CiteVerify.bat`: one-click Windows launcher.
-- `start-citeverify.sh`: macOS/Linux launcher.
-- `requirements.txt`: Python dependencies.
-- `VERSION`: current release version.
-- `CHANGELOG.md`: release history.
-- `.gitignore`: files that should not be uploaded to GitHub.
+- `citeverify_web.py` — local HTML upload and results interface
+- `citeverify_parser.py` — PDF and reference extraction
+- `citeverify_lookup.py` — DOI, scholarly, and catalog lookups
+- `Start-CiteVerify.bat` — Windows launcher
+- `start-citeverify.sh` — macOS/Linux launcher
+- `requirements.txt` — Python dependencies
+- `VERSION` — current release version
+- `CHANGELOG.md` — release history
+
+## Contributing
+
+Bug reports and improvements are welcome. When reporting a parsing problem,
+please include the PDF layout details, the extracted text shown in the report,
+and the operating system. Do not upload private papers or API keys.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development notes.
+
+## License
+
+CiteVerify is released under the [MIT License](LICENSE).

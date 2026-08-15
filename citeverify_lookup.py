@@ -24,7 +24,7 @@ from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
 
-USER_AGENT = "CiteVerify/0.1.0 (research reference verification)"
+USER_AGENT = "CiteVerify/0.1.2 (research reference verification)"
 DOI_URL = "https://api.crossref.org/works/{}"
 OPEN_LIBRARY_URL = "https://openlibrary.org/search.json?{}"
 GOOGLE_BOOKS_URL = "https://www.googleapis.com/books/v1/volumes?{}"
@@ -125,10 +125,11 @@ def best_title_candidate(item: dict[str, Any]) -> str | None:
     # but is a poor choice for author-year articles because it can return the
     # tail of the author list (the bug seen in reference 35).
     priority = {
-        "after_year": 0,
-        "quoted": 1,
-        "sentence_heuristic": 2,
+        "before_in": 0,
+        "after_year": 1,
+        "quoted": 2,
         "after_author": 3,
+        "sentence_heuristic": 4,
     }
     ordered = sorted(
         candidates,
@@ -576,6 +577,7 @@ def render_html_report(
         matched_title = verification.get("matched_title")
         evidence = verification.get("evidence_sources") or ([verification.get("source")] if verification.get("source") else [])
         evidence_text = ", ".join(str(value) for value in evidence if value) or "Not available"
+        matched_authors = verification.get("matched_authors") or []
         crosschecks = verification.get("crosschecks") or []
         crosscheck_html = ""
         if crosschecks:
@@ -596,6 +598,11 @@ def render_html_report(
             if matched_title
             else ""
         )
+        authors_html = (
+            f'<p><strong>Matched authors:</strong> {html.escape("; ".join(str(author) for author in matched_authors))}</p>'
+            if matched_authors
+            else ""
+        )
         cards.append(
             f"""<article class="reference-card">
 <div class="reference-heading"><h2>Reference {result.get('reference_number')}</h2>
@@ -608,6 +615,7 @@ def render_html_report(
 <p><strong>Evidence source:</strong> {html.escape(evidence_text)}</p>
 {crosscheck_html}
 {matched_html}
+{authors_html}
 <p><strong>Explanation:</strong> {reason}</p>
 </article>"""
         )

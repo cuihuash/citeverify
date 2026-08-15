@@ -290,7 +290,7 @@ def report_body(documents: list[dict[str, Any]]) -> str:
 
 
 class CitationHandler(BaseHTTPRequestHandler):
-    server_version = "CiteVerify/0.1.0"
+    server_version = "CiteVerify/0.1.2"
 
     def do_GET(self) -> None:  # noqa: N802
         path = urlparse(self.path).path
