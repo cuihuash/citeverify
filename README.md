@@ -232,4 +232,6 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development notes.
 
 ## License
 
+Copyright (c) 2026 Cuihua (Cindy) Shen
+
 CiteVerify is released under the [MIT License](LICENSE).

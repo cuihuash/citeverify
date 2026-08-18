@@ -348,6 +348,11 @@ def segment_references(section: str) -> list[tuple[int | None, str]]:
     if not section:
         return []
 
+    # ``extract_pdf_text`` uses this private marker to preserve a possible
+    # left-margin reference start while we are deciding how to segment the
+    # list. It must never leak into a user's processed citation.
+    plain_section = section.replace(PDF_REFERENCE_START, "")
+
     # PDF extraction can preserve the left-margin marker inserted by
     # ``extract_pdf_text``. Prefer it over author/year guessing because a
     # wrapped author list can look like a new author/year reference.
@@ -358,50 +363,63 @@ def segment_references(section: str) -> list[tuple[int | None, str]]:
             section,
         )
     )
+    author_year = list(AUTHOR_YEAR_START.finditer(plain_section))
+
+    # A PDF may mark only some left-margin starts—for example, after a page
+    # break or when the publisher uses slightly different indentation. If we
+    # have more author/year starts than layout markers, the sparse markers
+    # would merge the remaining references into the last one. In that case,
+    # use the author/year starts on the marker-free text instead.
+    if len(author_year) >= 2 and len(layout_starts) < len(author_year):
+        return _segment_at_starts(plain_section, author_year)
+
     if len(layout_starts) >= 2:
         segments: list[tuple[int | None, str]] = []
         for index, match in enumerate(layout_starts):
             end = layout_starts[index + 1].start() if index + 1 < len(layout_starts) else len(section)
-            raw = section[match.end() : end].strip()
+            raw = section[match.end() : end].replace(PDF_REFERENCE_START, "").strip()
             # A reference list may be followed by figures before the
             # supplementary-file heading. Those later left-margin markers are
             # not references; trim them from the final reference segment.
-            trailing_marker = raw.find(PDF_REFERENCE_START)
-            if trailing_marker >= 0:
-                raw = raw[:trailing_marker].strip()
             if raw:
                 segments.append((None, raw))
         if len(segments) >= 2:
             return segments
 
-    numbered = list(IEEE_START.finditer(section))
+    numbered = list(IEEE_START.finditer(plain_section))
     if len(numbered) < 2:
-        numbered = list(NUMBERED_START.finditer(section))
+        numbered = list(NUMBERED_START.finditer(plain_section))
 
     if len(numbered) >= 2 and _numbered_markers_are_plausible(numbered):
         segments: list[tuple[int | None, str]] = []
         for index, match in enumerate(numbered):
-            end = numbered[index + 1].start() if index + 1 < len(numbered) else len(section)
-            raw = section[match.start():end].strip()
+            end = numbered[index + 1].start() if index + 1 < len(numbered) else len(plain_section)
+            raw = plain_section[match.start():end].strip()
             number = int(match.group(1))
             segments.append((number, raw))
         return segments
 
-    author_year = list(AUTHOR_YEAR_START.finditer(section))
     if len(author_year) >= 2:
-        return _segment_at_starts(section, author_year)
+        return _segment_at_starts(plain_section, author_year)
+
+    # If the PDF gave us an explicit layout marker but not enough reliable
+    # starts to segment the list, preserve the complete citation. Splitting
+    # on blank lines here can turn a wrapped second line into a false
+    # reference containing only the citation's tail.
+    if PDF_REFERENCE_START in section:
+        return [(None, plain_section.strip())]
 
     # Author-year styles often have blank lines between records. This fallback
     # preserves the whole chunk when a PDF has lost that structure.
-    chunks = [chunk.strip() for chunk in re.split(r"\n\s*\n+", section) if chunk.strip()]
-    if len(chunks) >= 2:
+    chunks = [chunk.strip() for chunk in re.split(r"\n\s*\n+", plain_section) if chunk.strip()]
+    if len(chunks) >= 2 and all(YEAR.search(chunk) or DOI.search(chunk) or ISBN.search(chunk) for chunk in chunks):
         return [(None, chunk) for chunk in chunks]
 
     # Last resort: one citation per line, but only when lines look citation-like.
-    lines = [line.strip() for line in section.splitlines() if line.strip()]
+    lines = [line.strip() for line in plain_section.splitlines() if line.strip()]
     if len(lines) >= 2:
         return [(None, line) for line in lines]
-    return [(None, section.strip())]
+    return [(None, plain_section.strip())]
 
 
 def normalize_whitespace(value: str) -> str:
