@@ -33,9 +33,10 @@ NUMBERED_START = re.compile(r"(?m)^\s*(\d{1,3})[.)]\s+")
 AUTHOR_YEAR_START = re.compile(
     # Some references have a long author list that wraps across several PDF
     # lines. Allow enough room for those lists so a repeated lead author does
-    # not get merged into the preceding reference.
-    r"(?m)^(?=(?:[A-Z][^\n]{0,500}\((?:18|19|20)\d{2}[a-z]?\)(?:\.)?\s)"
-    r"|(?:[A-Z][^\n]{0,500}\n\s*\((?:18|19|20)\d{2}[a-z]?\)(?:\.)?\s))"
+    # not get merged into the preceding reference. Include lowercase name
+    # particles such as `dos Santos` and `van der Waals`.
+    r"(?m)^(?=(?:(?:[A-Z]|(?:[a-z]{1,4}\s+){1,3}[A-Z])[^\n]{0,500}\((?:18|19|20)\d{2}[a-z]?\)(?:\.)?\s)"
+    r"|(?:(?:[A-Z]|(?:[a-z]{1,4}\s+){1,3}[A-Z])[^\n]{0,500}\n\s*\((?:18|19|20)\d{2}[a-z]?\)(?:\.)?\s))"
 )
 YEAR = re.compile(r"\b(?:18|19|20)\d{2}\b")
 DOI = re.compile(r"\b10\.\d{4,9}/(?:[^\s<>\"']|(?<=-)\s+)+", re.I)
@@ -112,7 +113,11 @@ def extract_pdf_text(path: Path) -> str:
             # reference lists, a wrapped line is indented while a new record
             # starts at the left body margin. This prevents long repeated
             # author lists from being merged with the previous reference.
-            lines: list[tuple[float, float, str]] = []
+            # Store both the line's own x-position and its containing text
+            # block's x-position. Italic text and hanging indents can move a
+            # line within a block, while the block position remains a stable
+            # indicator of the left or right column.
+            lines: list[tuple[float, float, str, float]] = []
             page_height = page.rect.height
             for block in page.get_text("dict").get("blocks", []):
                 if block.get("type") != 0:
@@ -120,7 +125,14 @@ def extract_pdf_text(path: Path) -> str:
                 for line in block.get("lines", []):
                     text = "".join(span.get("text", "") for span in line.get("spans", [])).strip()
                     if text:
-                        lines.append((line["bbox"][1], line["bbox"][0], text))
+                        lines.append(
+                            (
+                                line["bbox"][1],
+                                line["bbox"][0],
+                                text,
+                                block["bbox"][0],
+                            )
+                        )
 
             # Some publishers store a reference number in a separate text
             # object from the citation itself. Join those objects when they
@@ -129,7 +141,7 @@ def extract_pdf_text(path: Path) -> str:
             lines.sort(key=lambda entry: (entry[0], entry[1]))
             number_pairs: dict[int, int] = {}
             paired_indices: set[int] = set()
-            for index, (y, x, text) in enumerate(lines):
+            for index, (y, x, text, _block_x) in enumerate(lines):
                 if not re.fullmatch(r"(?:\[\d{1,4}\]|\d{1,4}[.)])", text):
                     continue
                 nearby = [
@@ -149,20 +161,27 @@ def extract_pdf_text(path: Path) -> str:
                     number_pairs[index] = candidate
                     paired_indices.update({index, candidate})
 
-            merged_lines: list[tuple[float, float, str]] = []
+            merged_lines: list[tuple[float, float, str, float]] = []
             index = 0
             while index < len(lines):
-                y, x, text = lines[index]
+                y, x, text, block_x = lines[index]
                 if index in number_pairs:
                     candidate = number_pairs[index]
-                    candidate_y, candidate_x, candidate_text = lines[candidate]
-                    merged_lines.append((min(y, candidate_y), min(x, candidate_x), f"{text} {candidate_text}"))
+                    candidate_y, candidate_x, candidate_text, candidate_block_x = lines[candidate]
+                    merged_lines.append(
+                        (
+                            min(y, candidate_y),
+                            min(x, candidate_x),
+                            f"{text} {candidate_text}",
+                            min(block_x, candidate_block_x),
+                        )
+                    )
                     index += 1
                     continue
                 if index in paired_indices:
                     index += 1
                     continue
-                merged_lines.append((y, x, text))
+                merged_lines.append((y, x, text, block_x))
                 index += 1
             lines = merged_lines
 
@@ -171,7 +190,7 @@ def extract_pdf_text(path: Path) -> str:
             # interleaves the left and right columns and makes the parser see
             # only the first column as reference starts. Detect large x gaps
             # and read each column from top to bottom before moving right.
-            x_values = sorted({round(x, 1) for _, x, _ in lines if x > 20})
+            x_values = sorted({round(block_x, 1) for _, _x, _text, block_x in lines if block_x > 20})
             column_breaks = [
                 index
                 for index in range(len(x_values) - 1)
@@ -186,17 +205,34 @@ def extract_pdf_text(path: Path) -> str:
                 return sum(x > boundary for boundary in column_boundaries)
 
             column_lefts: dict[int, float] = {}
-            for _, x, _ in lines:
-                if x > 20:
-                    group = column_index(x)
-                    column_lefts[group] = min(column_lefts.get(group, x), x)
+            for _, _x, _text, block_x in lines:
+                if block_x > 20:
+                    group = column_index(block_x)
+                    column_lefts[group] = min(column_lefts.get(group, block_x), block_x)
 
-            lines.sort(key=lambda entry: (column_index(entry[1]), entry[0], entry[1]))
+            lines.sort(key=lambda entry: (column_index(entry[3]), entry[0], entry[1]))
             page_lines: list[str] = []
-            for y, x, text in lines:
+            for y, x, text, block_x in lines:
                 if text.casefold() == "for peer review":
                     continue
-                if re.fullmatch(r"(?:page\s+)?\d+(?:\s+of\s+\d+)?", text, re.I):
+                # Running headers in journal PDFs often contain the journal
+                # name, issue year, and page range. They can sit in a separate
+                # block between the two reference columns, so remove them
+                # before column detection rather than letting them look like
+                # a reference start.
+                if (
+                    y < 60
+                    and "/" in text
+                    and re.search(r"\b(?:18|19|20)\d{2}\)\s+\d{2,4}[a-z]?\d*\b", text)
+                ):
+                    continue
+                # A DOI can wrap onto a line containing only digits (for
+                # example, the final `02` of a DOI). Only discard standalone
+                # numbers when they are in the page header/footer area.
+                if (
+                    re.fullmatch(r"(?:page\s+)?\d+(?:\s+of\s+\d+)?", text, re.I)
+                    and (y < 60 or y >= page_height - 65)
+                ):
                     continue
                 if re.search(r"\bdownloaded from\s+https?://", text, re.I):
                     continue
@@ -206,8 +242,8 @@ def extract_pdf_text(path: Path) -> str:
                 # templates the first reference line begins there, and
                 # dropping it loses the authors. Repeated running headers are
                 # removed later by _clean_section.
-                group = column_index(x)
-                left_edge = column_lefts.get(group, x)
+                group = column_index(block_x)
+                left_edge = column_lefts.get(group, block_x)
                 marker = (
                     ""
                     if REFERENCE_HEADERS.fullmatch(text)
@@ -256,7 +292,7 @@ def _clean_section(section: str) -> str:
     raw_lines = [line.strip() for line in section.splitlines() if line.strip()]
     line_counts: dict[str, int] = {}
     for line in raw_lines:
-        key = re.sub(r"\s+", " ", line).casefold()
+        key = re.sub(r"\s+", " ", line.replace(PDF_REFERENCE_START, " ")).strip().casefold()
         line_counts[key] = line_counts.get(key, 0) + 1
 
     # Repeated short lines are often running headers/footers in publisher
@@ -278,7 +314,17 @@ def _clean_section(section: str) -> str:
         if not line or line.startswith("<!-- PAGE "):
             continue
         if _line_is_page_marker(line):
-            continue
+            # Keep a numeric line when it is the continuation of a DOI or
+            # URL split immediately after an underscore (for example, `_`
+            # followed by `02`). Other standalone numbers are page markers.
+            previous_is_split_identifier = bool(
+                lines
+                and re.search(r"https?://\S+[./_?&=-]$", lines[-1], re.I)
+                and re.fullmatch(r"\d+", line)
+                and lines[-1].endswith("_")
+            )
+            if not previous_is_split_identifier:
+                continue
         if re.fullmatch(r"for peer review", line, re.I):
             continue
         if re.fullmatch(r"page\s+\d+\s+of\s+\d+", line, re.I):
@@ -288,7 +334,9 @@ def _clean_section(section: str) -> str:
             # the top of every bibliography page. The first heading already
             # delimited the section, so later copies are layout noise.
             continue
-        normalized_line = re.sub(r"\s+", " ", line).casefold()
+        normalized_line = re.sub(
+            r"\s+", " ", line.replace(PDF_REFERENCE_START, " " )
+        ).strip().casefold()
         if normalized_line in repeated_layout_lines:
             continue
         if lines and lines[-1].endswith("\xad"):
@@ -307,11 +355,13 @@ def _clean_section(section: str) -> str:
             continue
         if (
             lines
-            and re.search(r"https?://\S+[./-]$", lines[-1], re.I)
+            and re.search(r"https?://\S+[./_?&=-]$", lines[-1], re.I)
             and re.match(r"^[a-z0-9]", line)
+            and (not lines[-1].endswith("_") or re.match(r"^\d", line))
         ):
-            # Preserve URLs split at a line boundary, such as `https://doi.`
-            # followed by `org/...`.
+            # Preserve URLs split at a line boundary, including DOI suffixes
+            # split after an underscore, such as `...mcs0301_` followed by
+            # `02`.
             lines[-1] += line
             continue
         lines.append(line)
