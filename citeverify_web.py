@@ -108,8 +108,14 @@ checks DOI and catalog information, and creates a readable HTML report.</p>
 </section>
 <section class="panel">
 <h2>What the results mean</h2>
-<p><strong>Verified</strong> means a source returned a strong match.</p>
-<p><strong>Unverified</strong> means the app could not find enough evidence. It does not mean the citation is fabricated.</p>
+<p>Results are listed from highest to lowest attention. A higher-attention result is a reason to review the processed reference more closely, not automatic proof that a citation is fabricated.</p>
+<ol>
+<li><strong>Conflict</strong> means a lookup result conflicts with the processed reference—for example, a DOI resolves to a different title or could not be found. Check the original PDF, the processed reference, and any DOI shown in the report.</li>
+<li><strong>Unverified</strong> means the app could not find enough evidence to confirm the citation. It does not mean the citation is fabricated.</li>
+<li><strong>Unable to check</strong> means the app could not complete a meaningful lookup, such as when no usable title or identifier was available or a lookup service was unavailable. No conclusion can be drawn from this result.</li>
+<li><strong>Verified title variant</strong> means a likely source was found, but its title wording or publication details differ. Review the matched record to confirm that it is the same source.</li>
+<li><strong>Verified</strong> means a source returned a strong match for the processed reference.</li>
+</ol>
 <p class="notice">API keys stay on this computer. They are never included in the report.</p>
 </section>"""
     body += """
@@ -248,7 +254,7 @@ def report_body(documents: list[dict[str, Any]]) -> str:
     sections: list[str] = [
         '<section class="hero" id="results-top"><h1>CiteVerify results</h1>'
         f'<p>{len(documents)} document{"s" if len(documents) != 1 else ""} processed. '
-        'Conflicts appear first, followed by unverified items and then verified items. '
+        'Results are ordered by attention level: conflicts, unverified, unable to check, verified title variants, then verified. '
         'Unverified does not mean fabricated.</p></section>',
         navigation,
     ]

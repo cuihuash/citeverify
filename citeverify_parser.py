@@ -21,12 +21,14 @@ except ImportError:  # pragma: no cover - exercised by the command-line error pa
 
 
 REFERENCE_HEADERS = re.compile(
-    r"(?im)^\s*(?:references and bibliography|literature cited|references|bibliography)"
+    r"(?im)^\s*(?:(?:\d{1,3}|[IVXLC]+)[.)]\s*)?"
+    r"(?:references and bibliography|literature cited|references?|bibliography)"
     r"(?:\s*(?:\((?:continued|cont\.?|2)\)|[-–—]\s*continued))?\s*:?[ \t]*$"
 )
 PDF_REFERENCE_START = "@@REF_START@@"
 NEXT_SECTION = re.compile(
     r"(?im)^\s*(?:@@REF_START@@)?\s*(?:appendix|appendices|acknowledg(?:e)?ments|supplementary material|supplementary file|author contributions|author biographies|author biography|conflict of interest)\b.*$"
+    r"|^\s*(?:@@REF_START@@)?\s*(?:\d{1,3}\.\s*)?(?:table|figure)\b.*$"
 )
 IEEE_START = re.compile(r"(?m)^\s*\[(\d{1,4})\]\s+")
 NUMBERED_START = re.compile(r"(?m)^\s*(\d{1,3})[.)]\s+")
@@ -35,8 +37,12 @@ AUTHOR_YEAR_START = re.compile(
     # lines. Allow enough room for those lists so a repeated lead author does
     # not get merged into the preceding reference. Include lowercase name
     # particles such as `dos Santos` and `van der Waals`.
-    r"(?m)^(?=(?:(?:[A-Z]|(?:[a-z]{1,4}\s+){1,3}[A-Z])[^\n]{0,500}\((?:18|19|20)\d{2}[a-z]?\)(?:\.)?\s)"
-    r"|(?:(?:[A-Z]|(?:[a-z]{1,4}\s+){1,3}[A-Z])[^\n]{0,500}\n\s*\((?:18|19|20)\d{2}[a-z]?\)(?:\.)?\s))"
+    r"(?m)^(?=(?:(?:[A-Z]|(?:[a-z]{1,4}\s+){1,3}[A-Z])[^\n]{0,500}"
+    r"\((?:18|19|20)\d{2}(?:[a-z]?|,\s*[^)\n]{1,40})\)(?:\.)?\s)"
+    r"|(?:(?:[A-Z]|(?:[a-z]{1,4}\s+){1,3}[A-Z])[^\n]{0,500}\n\s*"
+    r"\((?:18|19|20)\d{2}(?:[a-z]?|,\s*[^)\n]{1,40})\)(?:\.)?\s)"
+    r"|(?:(?:[A-Z]|(?:[a-z]{1,4}\s+){1,3}[A-Z])[^\n]{0,500},\s*"
+    r"(?:18|19|20)\d{2}(?:,\s*[^.\n]{1,30})?\.\s))"
 )
 YEAR = re.compile(r"\b(?:18|19|20)\d{2}\b")
 DOI = re.compile(r"\b10\.\d{4,9}/(?:[^\s<>\"']|(?<=-)\s+)+", re.I)
@@ -194,7 +200,11 @@ def extract_pdf_text(path: Path) -> str:
             column_breaks = [
                 index
                 for index in range(len(x_values) - 1)
-                if x_values[index + 1] - x_values[index] >= 40
+                # A hanging indent is commonly around 40 points. A real
+                # second column starts much farther away, so do not mistake
+                # continuation blocks in a single-column bibliography for a
+                # separate reading column.
+                if x_values[index + 1] - x_values[index] >= 100
             ]
             column_boundaries = [
                 (x_values[index] + x_values[index + 1]) / 2
@@ -226,6 +236,15 @@ def extract_pdf_text(path: Path) -> str:
                     and re.search(r"\b(?:18|19|20)\d{2}\)\s+\d{2,4}[a-z]?\d*\b", text)
                 ):
                     continue
+                if (
+                    y < 60
+                    and (
+                        re.search(r"\|\s*\d+\s*$", text)
+                        or re.fullmatch(r"(?:[A-Z]\.){1,3}\s*[A-Z][A-Za-z'-]+", text)
+                        or re.fullmatch(r"[A-Z][A-Za-z'-]*(?:\s+et al\.)?", text)
+                    )
+                ):
+                    continue
                 # A DOI can wrap onto a line containing only digits (for
                 # example, the final `02` of a DOI). Only discard standalone
                 # numbers when they are in the page header/footer area.
@@ -249,7 +268,11 @@ def extract_pdf_text(path: Path) -> str:
                     if REFERENCE_HEADERS.fullmatch(text)
                     or IEEE_START.match(text)
                     or NUMBERED_START.match(text)
-                    else PDF_REFERENCE_START if x <= left_edge + 3 else ""
+                    else (
+                        PDF_REFERENCE_START
+                        if block_x <= left_edge + 20 and x <= block_x + 3
+                        else ""
+                    )
                 )
                 page_lines.append(marker + text)
             page_text = "\n".join(page_lines)
@@ -313,14 +336,15 @@ def _clean_section(section: str) -> str:
         line = line.strip()
         if not line or line.startswith("<!-- PAGE "):
             continue
-        if _line_is_page_marker(line):
+        markerless_line = line.replace(PDF_REFERENCE_START, " ").strip()
+        if _line_is_page_marker(markerless_line):
             # Keep a numeric line when it is the continuation of a DOI or
             # URL split immediately after an underscore (for example, `_`
             # followed by `02`). Other standalone numbers are page markers.
             previous_is_split_identifier = bool(
                 lines
                 and re.search(r"https?://\S+[./_?&=-]$", lines[-1], re.I)
-                and re.fullmatch(r"\d+", line)
+                and re.fullmatch(r"\d+", markerless_line)
                 and lines[-1].endswith("_")
             )
             if not previous_is_split_identifier:
@@ -405,11 +429,14 @@ def segment_references(section: str) -> list[tuple[int | None, str]]:
 
     # PDF extraction can preserve the left-margin marker inserted by
     # ``extract_pdf_text``. Prefer it over author/year guessing because a
-    # wrapped author list can look like a new author/year reference.
+    # wrapped author list can look like a new author/year reference. Do not
+    # require a year on the marker line: some reference styles put the year
+    # after a long author list or use a comma-year format.
     layout_starts = list(
         re.finditer(
             re.escape(PDF_REFERENCE_START)
-            + r"(?=[A-Z][^\n]{0,500}\((?:18|19|20)\d{2}(?:[a-z]|,\s*[^)]*)?\)(?:\.)?\s)",
+            + r"(?!(?:https?://|www\.|table\b|figure\b|note\b))"
+            + r"(?=[^\W\d_][^\n]{1,500})",
             section,
         )
     )
@@ -420,7 +447,10 @@ def segment_references(section: str) -> list[tuple[int | None, str]]:
     # have more author/year starts than layout markers, the sparse markers
     # would merge the remaining references into the last one. In that case,
     # use the author/year starts on the marker-free text instead.
-    if len(author_year) >= 2 and len(layout_starts) < len(author_year):
+    if (
+        len(author_year) >= 2
+        and len(layout_starts) < len(author_year) - 2
+    ):
         return _segment_at_starts(plain_section, author_year)
 
     if len(layout_starts) >= 2:
